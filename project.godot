@@ -1,0 +1,13 @@
+; Opens the repository as a demo project: the example scene runs at start. Only addons/rebind_kit/ is shipped to the
+; Asset Library (see .gitattributes).
+config_version=5
+
+[application]
+
+config/name="Rebind Kit demo"
+run/main_scene="res://addons/rebind_kit/example/remap_example.tscn"
+config/features=PackedStringArray("4.6")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/rebind_kit/plugin.cfg")
