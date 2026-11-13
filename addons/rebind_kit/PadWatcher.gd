@@ -1,11 +1,15 @@
 ## PadWatcher: when a gamepad connects, finds its scheme. A model seen before gets its own back; a new one whose name
 ## is recognized (the adapter's `recognize` function, empty if not) takes that scheme without asking; one that isn't
-## recognized is reported with unknown_pad, and whoever listens asks the player.
+## recognized is reported with unknown_pad, and whoever listens asks the player. With several players each gamepad is
+## looked up in its owner's schemes (`library_for`); a gamepad nobody owns is ignored.
 class_name PadWatcher
 extends Node
 
-signal scheme_chosen(guid: String, scheme: ControlScheme)
-signal unknown_pad(guid: String, pad_name: String)
+signal scheme_chosen(device: int, guid: String, scheme: ControlScheme)
+signal unknown_pad(device: int, guid: String, pad_name: String)
+
+## device -> the SchemeLibrary of the player owning it, or null. By default, the one given at creation.
+var library_for: Callable
 
 var _library: SchemeLibrary
 var _recognize: Callable
@@ -15,7 +19,8 @@ var _pad_info: Callable
 func _init(library: SchemeLibrary, recognize: Callable, pad_info: Callable = Callable()) -> void:
 	_library = library
 	_recognize = recognize
-	_pad_info = pad_info if pad_info.is_valid() else _input_pad_info
+	_pad_info = pad_info if pad_info.is_valid() else input_pad_info
+	library_for = func(_device: int) -> SchemeLibrary: return _library
 
 func _ready() -> void:
 	Input.joy_connection_changed.connect(on_connection_changed)
@@ -25,14 +30,20 @@ func _ready() -> void:
 func on_connection_changed(device: int, connected: bool) -> void:
 	if not connected:
 		return
+	var library: SchemeLibrary = library_for.call(device)
+	if library == null:
+		return
 	var info: Dictionary = _pad_info.call(device)
 	var guid := str(info.get("guid", ""))
 	var pad_name := str(info.get("name", ""))
-	var scheme := _library.scheme_for_pad(guid, _recognize.call(pad_name), pad_name)
+	var scheme := library.scheme_for_pad(guid, _recognize.call(pad_name), pad_name)
 	if scheme == null:
-		unknown_pad.emit(guid, pad_name)
+		unknown_pad.emit(device, guid, pad_name)
 	else:
-		scheme_chosen.emit(guid, scheme)
+		scheme_chosen.emit(device, guid, scheme)
 
-static func _input_pad_info(device: int) -> Dictionary:
+## A gamepad that isn't connected (assigned ahead of time) has no name yet: asking Input would print an engine error.
+static func input_pad_info(device: int) -> Dictionary:
+	if device not in Input.get_connected_joypads():
+		return {}
 	return {"guid": Input.get_joy_guid(device), "name": Input.get_joy_name(device)}

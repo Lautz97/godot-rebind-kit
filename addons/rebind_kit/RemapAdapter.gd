@@ -14,6 +14,19 @@ func builtin_schemes(actions: Array) -> Array[ControlScheme]:
 		ControlScheme.from_input_map(&"default_pad", "Default", InputKey.PAD, actions)]
 	return out
 
+## The defaults of player `index` (2 and later), if they differ from player 1's (the second player on the keyboard
+## starting from the arrows); empty: the same as player 1.
+func player_schemes(_index: int) -> Array[ControlScheme]:
+	return []
+
+## How the schemes reach the game: InputMapDelivery (single keys, Godot does the rest) or ChordDelivery (combinations).
+func delivery() -> InputDelivery:
+	return InputMapDelivery.new()
+
+## How many local players can join (start_join); 1 for a single-player game.
+func max_players() -> int:
+	return 1
+
 ## A gamepad's default scheme from its name; empty if not recognized (the player gets asked).
 func recognize_pad(_pad_name: String) -> StringName:
 	return &""
@@ -43,6 +56,10 @@ const TEXTS := {
 	"hint_pad": "A on a button, then press the new one: any button you press is assigned",
 	"pad_connected": "gamepad: %s", "no_pad": "no gamepad connected",
 	"pad_layout": "LAYOUT", "layout_auto": "Automatic",
+	"player": "PLAYER %d", "listening_chord": "HOLD THE KEYS...",
+	"hint_chord_keyboard": "Click or ENTER on a key, then hold up to 4 keys in order and release: the combination is assigned",
+	"hint_chord_pad": "A on a button, then hold up to 4 buttons in order and release: the combination is assigned",
+	"moved_to_player": "Moved to player %d: %s",
 }
 
 func text(id: String) -> String:

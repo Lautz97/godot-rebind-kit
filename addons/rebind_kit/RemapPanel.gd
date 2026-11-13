@@ -2,7 +2,10 @@
 ## theme and frame. Two tabs (keyboard and mouse, gamepad), the scheme menu, the COMMAND / PRIMARY / ALTERNATIVE table
 ## by group, listening for the new input and the form of swapped commands to confirm. It works on a draft (RemapDraft):
 ## it only saves with SAVE AND CLOSE, and not while a command is pending. Made for one family (`fixed_family`), it is a
-## page of someone else's window: no tabs and no SAVE AND CLOSE, the host asks try_leave() before moving away.
+## page of someone else's window: no tabs and no SAVE AND CLOSE, the host asks try_leave() before moving away. With
+## several players the game picks whose schemes it shows: one player (listening only to that player's devices) or a
+## tab per player (listening to the devices of the tab's player). With ChordDelivery a key can be a combination: held
+## in order, closed when a key is released.
 class_name RemapPanel
 extends VBoxContainer
 
@@ -10,6 +13,8 @@ extends VBoxContainer
 signal closed()
 
 const KEY_WIDTH := 150.0
+## Combinations need room for up to four keys.
+const CHORD_KEY_WIDTH := 230.0
 const CLEAR_WIDTH := 40.0
 ## Every row is this tall, with or without a key drawing: rows don't jump between keyboard and gamepad.
 const ROW_HEIGHT := 50.0
@@ -30,6 +35,10 @@ var confirmer: Callable = func(_question: String, on_yes: Callable) -> void: on_
 var pad_connected: Callable = func() -> bool: return not Input.get_connected_joypads().is_empty()
 var capture: KeyCapture
 var family: StringName = InputKey.KEYBOARD
+## The player whose schemes are shown.
+var player_index := 1
+## The players the panel can show, one tab each when more than one.
+var players: Array[int] = [1]
 ## The only family shown, when the panel is a page of a bigger window (empty: both, with tabs).
 var fixed_family: StringName = &""
 var draft: RemapDraft
@@ -41,6 +50,7 @@ var listening: Dictionary = {}
 var layouts: OptionButton
 
 var _tabs: TabBar
+var _player_tabs: TabBar
 var _table_height: float = TABLE_HEIGHT
 var _schemes: OptionButton
 var _scheme_ids: Array[StringName] = []
@@ -58,10 +68,13 @@ var _hint: Label
 var _outside_form: Array[Control] = []
 
 ## `only_family`: one family, no tabs and no SAVE AND CLOSE (a page of the host's window). `table_height`: how tall the
-## command table is.
+## command table is. `shown_players`: the players whose schemes it shows (empty: player 1).
 func _init(input_remap: InputRemap, panel_colors: Dictionary = {}, only_family: StringName = &"",
-		table_height: float = TABLE_HEIGHT) -> void:
+		table_height: float = TABLE_HEIGHT, shown_players: Array[int] = []) -> void:
 	remap = input_remap
+	if not shown_players.is_empty():
+		players = shown_players.duplicate()
+	player_index = players[0]
 	fixed_family = only_family
 	_table_height = table_height
 	colors.merge(panel_colors, true)
@@ -83,7 +96,7 @@ func show_family(new_family: StringName) -> void:
 	_tabs.current_tab = FAMILIES.find(family)
 	capture.stop()
 	listening = {}
-	draft = remap.draft(family)
+	draft = remap.draft(family, player_index)
 	_fill_schemes()
 	_fill_table()
 
@@ -96,19 +109,36 @@ func switch_family(new_family: StringName) -> void:
 		_show_form(true)
 		return
 	if draft.is_dirty():
-		remap.save(draft, family)
+		remap.save(draft, family, player_index)
 	show_family(new_family)
+
+## Another player's tab: this player's changes are saved first, as when changing family.
+func switch_player(index: int) -> void:
+	if index == player_index:
+		return
+	if not draft.can_save():
+		_player_tabs.set_current_tab.call_deferred(players.find(player_index))
+		_show_form(true)
+		return
+	if draft.is_dirty():
+		remap.save(draft, family, player_index)
+	player_index = index
+	_player_tabs.current_tab = players.find(index)
+	show_family(family)
 
 ## Whether the open tab can listen: the keyboard is always there, the gamepad only when connected.
 func can_listen() -> bool:
-	return family == InputKey.KEYBOARD or pad_connected.call()
+	var p := remap.player(player_index)
+	if family == InputKey.KEYBOARD:
+		return p.keyboard
+	return p.has_family(InputKey.PAD) and pad_connected.call()
 
 ## Click (or A) on `action`'s `slot` key: listens for the next input until it comes (it can't be cancelled).
 func press_key(action: StringName, slot: int) -> void:
 	if not can_listen():
 		return
 	listening = {"action": action, "slot": slot}
-	capture.listen(family)
+	capture.listen(family, remap.player(player_index), remap.supports_chords())
 	_fill_table()
 	_focus_row(action, slot)
 
@@ -137,7 +167,7 @@ func try_leave() -> bool:
 		_show_form(true)
 		return false
 	if draft.is_dirty():
-		remap.save(draft, family)
+		remap.save(draft, family, player_index)
 	return true
 
 ## DISCARD CHANGES: as a page the table goes back to what is saved and stays; otherwise the panel closes.
@@ -164,27 +194,36 @@ func form_visible() -> bool:
 ## The scheme picked from the menu; the entry of a custom scheme that doesn't exist yet creates it from the one in use.
 func select_scheme(index: int) -> void:
 	if index >= _scheme_ids.size():
-		remap.custom(family)
+		remap.custom(family, player_index)
 	else:
-		remap.select(family, _scheme_ids[index])
+		remap.select(family, _scheme_ids[index], player_index)
 	show_family(family)
 
 ## The layout picked from the menu, for the connected gamepad: the keys are redrawn with its names.
 func select_layout(index: int) -> void:
-	remap.set_pad_layout(_layout_ids[index])
+	remap.set_pad_layout(_layout_ids[index], player_index)
 	show_family(family)
 
 ## DEFAULTS: the tab's first default scheme, with confirmation (the custom one stays in the menu).
 func reset_to_defaults() -> void:
 	confirmer.call(_text("defaults_confirm"), func() -> void:
-		var builtin: ControlScheme = remap.library.schemes(family).filter(
-			func(s: ControlScheme) -> bool: return remap.library.is_builtin(s.id))[0]
-		remap.select(family, builtin.id)
+		var lib := remap.player(player_index).library
+		var builtin: ControlScheme = lib.schemes(family).filter(
+			func(s: ControlScheme) -> bool: return lib.is_builtin(s.id))[0]
+		remap.select(family, builtin.id, player_index)
 		show_family(family))
 
 # --- Building ------------------------------------------------------------------------------------------------
 
 func _build() -> void:
+	_player_tabs = TabBar.new()
+	# One player: no player tabs (and no player texts asked of the adapter).
+	if players.size() > 1:
+		for index in players:
+			_player_tabs.add_tab(_text("player") % index)
+		_player_tabs.tab_changed.connect(func(tab: int) -> void: switch_player(players[tab]))
+		add_child(_player_tabs)
+		_outside_form.append(_player_tabs)
 	_tabs = TabBar.new()
 	_tabs.add_tab(_text("tab_keyboard"))
 	_tabs.add_tab(_text("tab_pad"))
@@ -290,22 +329,24 @@ func _header() -> Control:
 func _fill_schemes() -> void:
 	_schemes.clear()
 	_scheme_ids.clear()
-	var active := remap.active(family)
-	for scheme in remap.library.schemes(family):
+	var p := remap.player(player_index)
+	var active := p.active(family)
+	for scheme in p.library.schemes(family):
 		_schemes.add_item(remap.scheme_label(scheme))
 		_scheme_ids.append(scheme.id)
 	# The entry that creates the custom scheme, if this tab doesn't have one yet (keyboard, or connected gamepad).
 	var custom_id := StringName(SchemeLibrary.CUSTOM_PREFIX + (SchemeLibrary.KEYBOARD_OWNER if family == InputKey.KEYBOARD
-		else remap.current_pad).validate_node_name())
-	if remap.library.scheme(custom_id) == null:
+		else p.pad_guid).validate_node_name())
+	if p.library.scheme(custom_id) == null:
 		_schemes.add_item(_text("custom"))
 	_schemes.select(_scheme_ids.find(active.id))
 	if family == InputKey.KEYBOARD:
 		_device_label.text = ""
 	else:
-		var pad_name := remap.library.pad_name(remap.current_pad)
+		var pad_name := p.library.pad_name(p.pad_guid)
 		_device_label.text = _text("pad_connected") % pad_name if not pad_name.is_empty() else _text("no_pad")
-	_hint.text = _text("hint_keyboard" if family == InputKey.KEYBOARD else "hint_pad")
+	var hint := "hint_keyboard" if family == InputKey.KEYBOARD else "hint_pad"
+	_hint.text = _text(hint.replace("hint_", "hint_chord_") if remap.supports_chords() else hint)
 	_fill_layouts()
 
 func _fill_layouts() -> void:
@@ -318,9 +359,10 @@ func _fill_layouts() -> void:
 	for id: StringName in titles:
 		_layout_ids.append(id)
 		layouts.add_item(str(titles[id]))
-	layouts.select(maxi(0, _layout_ids.find(remap.pad_layout(remap.current_pad))))
+	var p := remap.player(player_index)
+	layouts.select(maxi(0, _layout_ids.find(p.library.pad_layout(p.pad_guid))))
 	# The choice belongs to the connected gamepad model: with none there's nothing to choose for.
-	layouts.disabled = remap.current_pad.is_empty()
+	layouts.disabled = p.pad_guid.is_empty()
 
 func _fill_table() -> void:
 	for child in _table.get_children():
@@ -335,7 +377,7 @@ func _fill_table() -> void:
 			_add_row(action, stripe)
 			stripe = not stripe
 	var pending := draft.pending().size()
-	_warning.text = _text("pending") % pending if pending > 0 else ""
+	_warning.text = _text("pending") % pending if pending > 0 else _neighbor_note()
 
 func _add_row(action: StringName, stripe: bool) -> void:
 	var pending := draft.pending().has(action)
@@ -370,17 +412,26 @@ func _add_row(action: StringName, stripe: bool) -> void:
 	buttons.append(clear)
 	rows[action] = buttons
 
+## The other players' commands this draft moved, as a line under the table.
+func _neighbor_note() -> String:
+	var notes: Array[String] = []
+	for swap: Dictionary in draft.neighbor_swaps():
+		notes.append(_text("moved_to_player") % [swap["player"], _text(remap.catalog.title_of(swap["action"]))])
+	return "  ".join(notes)
+
 func _key_button(key: InputKey, is_listening: bool, pending: bool) -> Button:
 	var b := Button.new()
-	b.custom_minimum_size = Vector2(KEY_WIDTH, ROW_HEIGHT - 6)
+	b.custom_minimum_size = Vector2(CHORD_KEY_WIDTH if remap.supports_chords() else KEY_WIDTH, ROW_HEIGHT - 6)
 	b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	b.add_theme_constant_override("icon_max_width", 0)
 	if is_listening:
-		b.text = _text("listening")
+		b.text = _text("listening_chord" if remap.supports_chords() else "listening")
 		b.theme_type_variation = &"ActionButton"
 	elif key == null:
 		b.text = _text("empty")
 		b.add_theme_color_override("font_color", colors["off"])
+	elif key.is_chord():
+		_chord_into(b, key, colors["warn"] if pending else colors["text"])
 	else:
 		var tex := remap.adapter.key_texture(key)
 		if tex != null:
@@ -391,6 +442,35 @@ func _key_button(key: InputKey, is_listening: bool, pending: bool) -> Button:
 		else:
 			b.text = remap.adapter.key_name(key)
 	return b
+
+## A combination is drawn key by key, joined by "+", inside the button (an icon holds one texture only).
+func _chord_into(button: Button, key: InputKey, tint: Color) -> void:
+	var box := HBoxContainer.new()
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_theme_constant_override("separation", 2)
+	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(box)
+	var parts := key.sequence()
+	for i in parts.size():
+		if i > 0:
+			var plus := _label("+", "dim", true)
+			plus.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			box.add_child(plus)
+		var tex := remap.adapter.key_texture(parts[i])
+		if tex != null:
+			var image := TextureRect.new()
+			image.texture = tex
+			image.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+			image.modulate = tint
+			image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			box.add_child(image)
+		else:
+			var written := Label.new()
+			written.text = remap.adapter.key_name(parts[i])
+			written.add_theme_color_override("font_color", tint)
+			written.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			box.add_child(written)
 
 func _row_panel(back: Color, marked: bool) -> PanelContainer:
 	var panel := PanelContainer.new()

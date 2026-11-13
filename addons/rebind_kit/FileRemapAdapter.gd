@@ -1,6 +1,7 @@
 ## FileRemapAdapter: a ready-to-use RemapAdapter. The command catalog comes from a Dictionary or a JSON file, the
 ## defaults are the project's InputMap, the player's choices are saved to a JSON file, and every input gets a drawn key
-## made from a font (Godot's default one if none is given). Gamepad buttons use the Xbox names.
+## made from a font (Godot's default one if none is given). Gamepad buttons use the Xbox names. Set `chords` and
+## `players` before creating InputRemap for combinations and local players.
 class_name FileRemapAdapter
 extends RemapAdapter
 
@@ -24,6 +25,10 @@ const MOUSE_BUTTONS := {
 }
 
 var save_path: String
+## Combinations (ChordDelivery) instead of single keys in the InputMap.
+var chords := false
+## How many local players can join.
+var players := 1
 var _catalog: Dictionary = {}
 var _renderer: KeyCapRenderer
 
@@ -35,6 +40,12 @@ func _init(catalog: Variant, path: String = DEFAULT_SAVE_PATH, font: Font = null
 
 func catalog_data() -> Dictionary:
 	return _catalog
+
+func delivery() -> InputDelivery:
+	return ChordDelivery.new() if chords else InputMapDelivery.new()
+
+func max_players() -> int:
+	return players
 
 func load_state() -> Dictionary:
 	return _read_json(save_path)

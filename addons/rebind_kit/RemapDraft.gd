@@ -2,7 +2,11 @@
 ## (same catalog scope) is swapped, and that command stays pending until it's confirmed or rebound: nothing saves while
 ## a command is pending. Across different scopes the same input sits on two commands. Required commands (whoever
 ## creates the draft says which) always keep a primary; the others may be left with no input. Opened on a default
-## scheme, the first change works on a copy (forked): whoever saves turns it into a custom scheme.
+## scheme, the first change works on a copy (forked): whoever saves turns it into a custom scheme. Combinations follow
+## ChordRules: a key that opens a combination clashes with a command on that key alone, so every command it clashes with
+## is moved (the first takes the old input, the others are left empty) and stays pending. Other players who share the
+## keyboard (`neighbors`) can't use the same input either: the other player's command takes the old input, no
+## confirmation needed, and whoever saves stores their schemes too (`neighbor_schemes`).
 class_name RemapDraft
 extends RefCounted
 
@@ -14,12 +18,21 @@ var _forked := false
 var _dirty := false
 var _pending: Array[StringName] = []
 var _required: Array[StringName] = []
+## Player index -> that player's keyboard scheme, as opened.
+var _neighbors: Dictionary = {}
+## Player index -> the copy changed by a swap.
+var _neighbor_changes: Dictionary = {}
+## {"player", "action"} of every neighbor's command moved by this draft.
+var _neighbor_swaps: Array[Dictionary] = []
 
-## `required`: the commands that can't be left without a primary; null for all of them.
-func _init(catalog: RemapCatalog, scheme: ControlScheme, builtin: bool, required: Variant = null) -> void:
+## `required`: the commands that can't be left without a primary; null for all of them. `neighbors`: player index ->
+## the keyboard scheme of each other player sharing the keyboard.
+func _init(catalog: RemapCatalog, scheme: ControlScheme, builtin: bool, required: Variant = null,
+		neighbors: Dictionary = {}) -> void:
 	_catalog = catalog
 	_original = scheme
 	_builtin = builtin
+	_neighbors = neighbors
 	if required is Array:
 		_required.assign(required)
 	else:
@@ -42,6 +55,14 @@ func forked() -> bool:
 func is_dirty() -> bool:
 	return _dirty
 
+## Player index -> the scheme of that player changed by a swap: to be stored with this one.
+func neighbor_schemes() -> Dictionary:
+	return _neighbor_changes.duplicate()
+
+## {"player", "action"} of the other players' commands that took a swapped input.
+func neighbor_swaps() -> Array[Dictionary]:
+	return _neighbor_swaps.duplicate()
+
 func pending() -> Array[StringName]:
 	return _pending.duplicate()
 
@@ -63,14 +84,19 @@ func rebind(action: StringName, slot: int, key: InputKey) -> Array[StringName]:
 		_settle(action)
 		return swapped
 	_fork()
-	var holder := _holder_in_group(key, action)
-	if not holder.is_empty():
+	_working.set_key(action, slot, null)
+	var holders := _holders_in_group(key, action)
+	var give: InputKey = old
+	for holder: Dictionary in holders:
 		var other: StringName = holder["action"]
-		_working.set_key(other, holder["slot"], old)
+		_working.set_key(other, holder["slot"], give)
+		give = null
 		if other != action:
 			swapped.append(other)
 			if not _pending.has(other):
 				_pending.append(other)
+	if holders.is_empty():
+		_swap_with_neighbor(key, action, old)
 	_working.set_key(action, slot, key)
 	_settle(action)
 	_dirty = true
@@ -110,6 +136,8 @@ func discard() -> void:
 	_forked = false
 	_dirty = false
 	_pending.clear()
+	_neighbor_changes.clear()
+	_neighbor_swaps.clear()
 
 ## A command rebound by hand is no longer pending, if it has a primary again.
 func _settle(action: StringName) -> void:
@@ -125,14 +153,41 @@ func _fork() -> void:
 		_working.base_id = _original.id
 		_forked = true
 
-## Who uses `key` among the commands active together with `action` (itself included): {"action", "slot"} or empty.
-func _holder_in_group(key: InputKey, action: StringName) -> Dictionary:
+## Whose inputs clash with `key` among the commands active together with `action` (itself included), in order:
+## [{"action", "slot"}].
+func _holders_in_group(key: InputKey, action: StringName) -> Array[Dictionary]:
+	return _holders_in(_working, key, action, true)
+
+func _holders_in(scheme: ControlScheme, key: InputKey, action: StringName, mine_first: bool) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
 	var others := _catalog.conflicting(action)
 	# The same command first: swapping between primary and alternative needs no confirmation.
 	others.erase(action)
-	others.push_front(action)
+	if mine_first:
+		others.push_front(action)
+	else:
+		others.append(action)
 	for other in others:
 		for slot in ControlScheme.SLOTS:
-			if key.equals(_working.key_at(other, slot)):
-				return {"action": other, "slot": slot}
-	return {}
+			if ChordRules.clashes(key, scheme.key_at(other, slot)):
+				out.append({"action": other, "slot": slot})
+	return out
+
+## Another player on the keyboard holding a clashing input gets `old` in its place.
+func _swap_with_neighbor(key: InputKey, action: StringName, old: InputKey) -> void:
+	if key.family() != InputKey.KEYBOARD:
+		return
+	for player: int in _neighbors:
+		var scheme: ControlScheme = _neighbor_changes.get(player, _neighbors[player])
+		var holders := _holders_in(scheme, key, action, false)
+		if holders.is_empty():
+			continue
+		if not _neighbor_changes.has(player):
+			scheme = scheme.copy(scheme.id, scheme.title)
+			scheme.base_id = (_neighbors[player] as ControlScheme).base_id
+			_neighbor_changes[player] = scheme
+		var give: InputKey = old
+		for holder: Dictionary in holders:
+			scheme.set_key(holder["action"], holder["slot"], give)
+			give = null
+			_neighbor_swaps.append({"player": player, "action": holder["action"]})
